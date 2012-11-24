@@ -404,10 +404,10 @@ func (c *asyncClient) Lset(arg0 string, arg1 int64, arg2 []byte) (stat FutureBoo
 }
 
 // Redis LREM command.
-func (c *asyncClient) Lrem(key string, value []byte, count int64) (result FutureInt64, err Error) {
+func (c *asyncClient) Lrem(key string, count int64, value []byte) (result FutureInt64, err Error) {
 	arg0bytes := []byte(key)
-	arg1bytes := value
-	arg2bytes := []byte(strconv.FormatInt(count, 10))
+	arg1bytes := []byte(strconv.FormatInt(count, 10))
+	arg2bytes := value
 
 	var resp *PendingResponse
 	resp, err = c.conn.QueueRequest(&LREM, [][]byte{arg0bytes, arg1bytes, arg2bytes})
