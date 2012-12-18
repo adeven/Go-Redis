@@ -195,7 +195,7 @@ type Client interface {
 	Lset(key string, arg1 int64, arg2 []byte) Error
 
 	// Redis LREM command.
-	Lrem(key string, arg1 []byte, arg2 int64) (result int64, err Error)
+	Lrem(key string, arg1 int64, arg2 []byte) (result int64, err Error)
 
 	// Redis LLEN command.
 	Llen(key string) (result int64, err Error)
@@ -416,7 +416,7 @@ type AsyncClient interface {
 	Lset(key string, arg1 int64, arg2 []byte) (status FutureBool, err Error)
 
 	// Redis LREM command.
-	Lrem(key string, arg1 []byte, arg2 int64) (result FutureInt64, err Error)
+	Lrem(key string, arg1 int64, arg2 []byte) (result FutureInt64, err Error)
 
 	// Redis LLEN command.
 	Llen(key string) (result FutureInt64, err Error)
