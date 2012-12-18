@@ -41,8 +41,6 @@ const (
 	DefaultTCPKeepalive         = true
 	DefaultHeartbeatSecs        = 1 * time.Second
 	DefaultProtocol             = REDIS_DB
-	DefaultReconnectDelay       = 1 * time.Second
-	DefaultMaxReconnects        = 2
 )
 
 // Redis specific default settings
@@ -78,22 +76,20 @@ func (p Protocol) String() string {
 // Defines the set of parameters that are used by the client connections
 //
 type ConnectionSpec struct {
-	host           string        // redis connection host
-	port           int           // redis connection port
-	password       string        // redis connection password
-	db             int           // Redis connection db #
-	rBufSize       int           // tcp read buffer size
-	wBufSize       int           // tcp write buffer size
-	rTimeout       time.Duration // tcp read timeout
-	wTimeout       time.Duration // tcp write timeout
-	keepalive      bool          // keepalive flag
-	lingerspec     int           // -n: finish io; 0: discard, +n: wait for n secs to finish
-	reqChanCap     int           // async request channel capacity - see DefaultReqChanSize
-	rspChanCap     int           // async response channel capacity - see DefaultRespChanSize
-	heartbeat      time.Duration // 0 means no heartbeat
-	protocol       Protocol
-	reconnectDelay time.Duration // minimum delay between consecutive reconnect attempts
-	maxReconnects  int           // maximum number of failed reconnects before reconnect panics
+	host       string        // redis connection host
+	port       int           // redis connection port
+	password   string        // redis connection password
+	db         int           // Redis connection db #
+	rBufSize   int           // tcp read buffer size
+	wBufSize   int           // tcp write buffer size
+	rTimeout   time.Duration // tcp read timeout
+	wTimeout   time.Duration // tcp write timeout
+	keepalive  bool          // keepalive flag
+	lingerspec int           // -n: finish io; 0: discard, +n: wait for n secs to finish
+	reqChanCap int           // async request channel capacity - see DefaultReqChanSize
+	rspChanCap int           // async response channel capacity - see DefaultRespChanSize
+	heartbeat  time.Duration // 0 means no heartbeat
+	protocol   Protocol
 }
 
 // Creates a ConnectionSpec using default settings.
@@ -114,8 +110,6 @@ func DefaultSpec() *ConnectionSpec {
 		DefaultRespChanSize,
 		DefaultHeartbeatSecs,
 		DefaultProtocol,
-		DefaultReconnectDelay,
-		DefaultMaxReconnects,
 	}
 }
 
@@ -214,12 +208,10 @@ type Subscription struct {
 // General control structure used by connections.
 //
 type connHdl struct {
-	spec           *ConnectionSpec
-	conn           net.Conn // may want to change this to TCPConn - TODO REVU
-	reader         *bufio.Reader
-	connected      bool // TODO
-	nextReconnect  time.Time
-	reconnectCount int
+	spec      *ConnectionSpec
+	conn      net.Conn // may want to change this to TCPConn - TODO REVU
+	reader    *bufio.Reader
+	connected bool // TODO
 }
 
 // Returns minimal info string for logging, etc
@@ -323,40 +315,6 @@ func (hdl *connHdl) disconnect() {
 	}
 }
 
-func (c *connHdl) reconnect() (success bool) {
-	// panic after too many failed attempts
-	if c.reconnectCount >= c.spec.maxReconnects {
-		panic("Too many failed reconnects.")
-	}
-
-	// only try once every c.spec.reconnectDelay
-	if time.Now().Before(c.nextReconnect) {
-		return
-	}
-
-	defer func() {
-		if e := recover(); e != nil { // reconnect failed
-			c.nextReconnect = time.Now().Add(c.spec.reconnectDelay)
-			c.reconnectCount += 1
-		}
-	}()
-
-	// try reconnect
-	c.disconnect()
-	*c = *newConnHdl(c.spec) // panics
-
-	if c.connected { // reconnect succeeded
-		success = true
-		// reset reconnect stats
-		c.nextReconnect = time.Now()
-		c.reconnectCount = 0
-	} else {
-		// trigger intern panic which gets caught by deferred recover
-		panic("Failed to reconnect.")
-	}
-	return
-}
-
 // Creates a new SyncConnection using the provided ConnectionSpec.
 // Note that this function will also connect to the specified redis server.
 func NewSyncConnection(spec *ConnectionSpec) (c SyncConnection, err Error) {
@@ -380,13 +338,7 @@ func (c *connHdl) ServiceRequest(cmd *Command, args [][]byte) (resp Response, er
 	defer func() {
 		if re := recover(); re != nil {
 			// REVU - needs to be logged - TODO
-
-			if success := c.reconnect(); success {
-				// try again if recconnect was successful
-				resp, err = c.ServiceRequest(cmd, args)
-			} else {
-				err = newSystemErrorWithCause("ServiceRequest", re.(error))
-			}
+			err = newSystemErrorWithCause("ServiceRequest", re.(error))
 		}
 	}()
 
@@ -613,13 +565,7 @@ func (c *asyncConnHdl) QueueRequest(cmd *Command, args [][]byte) (pending *Pendi
 	defer func() {
 		if re := recover(); re != nil {
 			// REVU - needs to be logged - TODO
-
-			if success := c.reconnect(); success {
-				// try again if recconnect was successful
-				pending, err = c.QueueRequest(cmd, args)
-			} else {
-				err = newSystemErrorWithCause("QueueRequest", re.(error))
-			}
+			err = newSystemErrorWithCause("QueueRequest", re.(error))
 		}
 	}()
 
@@ -724,44 +670,11 @@ func (c *asyncConnHdl) connect() {
 }
 
 // REVU - TODO opt 2 for Quit here
+// panics
 func (c *asyncConnHdl) disconnect() {
-	c.super.disconnect()
-	// should we close the channels here?
-}
 
-func (c *asyncConnHdl) reconnect() (success bool) {
-	// panic after too many failed attempts
-	if c.super.reconnectCount >= c.super.spec.maxReconnects {
-		panic("Too many failed reconnects.")
-	}
-
-	// only try once every c.super.spec.reconnectDelay
-	if time.Now().Before(c.super.nextReconnect) {
-		return
-	}
-
-	defer func() {
-		if e := recover(); e != nil { // reconnect failed
-			c.super.nextReconnect = time.Now().Add(c.super.spec.reconnectDelay)
-			c.super.reconnectCount += 1
-		}
-	}()
-
-	// try reconnect
-	c.disconnect()
-	*c = *newAsyncConnHdl(c.super.spec) // panics
-
-	if c.super.connected { // reconnect succeeded
-		c.startup()
-		success = true
-		// reset reconnect stats
-		c.super.nextReconnect = time.Now()
-		c.super.reconnectCount = 0
-	} else {
-		// trigger intern panic which gets caught by deferred recover
-		panic("Failed to reconnect.")
-	}
-	return
+	panic("asyncConnHdl.disconnect NOT IMLEMENTED!")
+	//	return
 }
 
 // responsible for managing the various moving parts of the asyncConnHdl
